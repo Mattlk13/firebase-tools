@@ -16,8 +16,8 @@ import {
   WebAppMetadata,
 } from "../management/apps";
 import { prompt, promptOnce, Question } from "../prompt";
-import * as requireAuth from "../requireAuth";
-import * as logger from "../logger";
+import { requireAuth } from "../requireAuth";
+import { logger } from "../logger";
 
 const DISPLAY_NAME_QUESTION: Question = {
   type: "input",

@@ -1,20 +1,19 @@
 "use strict";
 
-var _ = require("lodash");
-
-var requireInstance = require("../requireInstance");
-var { requirePermissions } = require("../requirePermissions");
-var checkDupHostingKeys = require("../checkDupHostingKeys");
-var checkValidTargetFilters = require("../checkValidTargetFilters");
-var checkFirebaseSDKVersion = require("../checkFirebaseSDKVersion");
-var { Command } = require("../command");
-var deploy = require("../deploy");
-var requireConfig = require("../requireConfig");
-var filterTargets = require("../filterTargets");
+const _ = require("lodash");
+const { requireDatabaseInstance } = require("../requireDatabaseInstance");
+const { requirePermissions } = require("../requirePermissions");
+const { checkServiceAccountIam } = require("../deploy/functions/checkIam");
+const checkValidTargetFilters = require("../checkValidTargetFilters");
+const { Command } = require("../command");
+const deploy = require("../deploy");
+const requireConfig = require("../requireConfig");
+const filterTargets = require("../filterTargets");
+const { requireHostingSite } = require("../requireHostingSite");
 
 // in order of least time-consuming to most time-consuming
-var VALID_TARGETS = ["database", "storage", "firestore", "functions", "hosting"];
-var TARGET_PERMISSIONS = {
+const VALID_TARGETS = ["database", "storage", "firestore", "functions", "hosting", "remoteconfig"];
+const TARGET_PERMISSIONS = {
   database: ["firebasedatabase.instances.update"],
   hosting: ["firebasehosting.sites.update"],
   functions: [
@@ -36,6 +35,7 @@ var TARGET_PERMISSIONS = {
     "firebaserules.rulesets.create",
     "firebaserules.releases.update",
   ],
+  remoteconfig: ["cloudconfig.configs.get", "cloudconfig.configs.update"],
 };
 
 module.exports = new Command("deploy")
@@ -55,22 +55,29 @@ module.exports = new Command("deploy")
   )
   .option("--except <targets>", 'deploy to all targets except specified (e.g. "database")')
   .before(requireConfig)
-  .before(function(options) {
+  .before(function (options) {
     options.filteredTargets = filterTargets(options, VALID_TARGETS);
     const permissions = options.filteredTargets.reduce((perms, target) => {
       return perms.concat(TARGET_PERMISSIONS[target]);
     }, []);
     return requirePermissions(options, permissions);
   })
-  .before(function(options) {
-    // only fetch the default instance for hosting or database deploys
-    if (_.intersection(options.filteredTargets, ["hosting", "database"]).length > 0) {
-      return requireInstance(options);
+  .before((options) => {
+    if (options.filteredTargets.includes("functions")) {
+      return checkServiceAccountIam(options.project);
     }
   })
-  .before(checkDupHostingKeys)
+  .before(async function (options) {
+    // only fetch the default instance for hosting or database deploys
+    if (_.includes(options.filteredTargets, "database")) {
+      await requireDatabaseInstance(options);
+    }
+
+    if (_.includes(options.filteredTargets, "hosting")) {
+      await requireHostingSite(options);
+    }
+  })
   .before(checkValidTargetFilters)
-  .before(checkFirebaseSDKVersion)
-  .action(function(options) {
+  .action(function (options) {
     return deploy(options.filteredTargets, options);
   });

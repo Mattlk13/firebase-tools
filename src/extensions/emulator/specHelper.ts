@@ -3,10 +3,11 @@ import * as _ from "lodash";
 import * as path from "path";
 import * as fs from "fs-extra";
 
-import { fileExistsSync } from "../../fsutils";
-import { ExtensionSpec, Resource, Param } from "../extensionsApi";
+import { ExtensionSpec, Resource } from "../extensionsApi";
 import { FirebaseError } from "../../error";
-import { substituteParams } from "./paramHelper";
+import { substituteParams } from "../extensionsHelper";
+import { EmulatorLogger } from "../../emulator/emulatorLogger";
+import { Emulators } from "../../emulator/types";
 
 const SPEC_FILE = "extension.yaml";
 const validFunctionTypes = [
@@ -30,24 +31,6 @@ function wrappedSafeLoad(source: string): any {
 }
 
 /**
- * Climbs directories loking for an extension.yaml file, and return the first
- * directory that contains one. Throws an error if none is found.
- * @param directory the directory to start from searching from.
- */
-export async function findExtensionYaml(directory: string): Promise<string> {
-  while (!fileExistsSync(path.resolve(directory, SPEC_FILE))) {
-    const parentDir = path.dirname(directory);
-    if (parentDir === directory) {
-      throw new FirebaseError(
-        "Couldn't find an extension.yaml file. Check that you are in the root directory of your extension."
-      );
-    }
-    directory = parentDir;
-  }
-  return directory;
-}
-
-/**
  * Reads an extension.yaml and parses its contents into an ExtensionSpec.
  * @param directory the directory to look for a extensionYaml in.
  */
@@ -60,7 +43,7 @@ export async function readExtensionYaml(directory: string): Promise<ExtensionSpe
 /**
  * Retrieves a file from the directory.
  */
-export async function readFileFromDirectory(
+export function readFileFromDirectory(
   directory: string,
   file: string
 ): Promise<{ [key: string]: any }> {
@@ -94,9 +77,63 @@ export function getFunctionResourcesWithParamSubstitution(
   const rawResources = extensionSpec.resources.filter((resource) =>
     validFunctionTypes.includes(resource.type)
   );
-  return substituteParams(rawResources, params);
+  return substituteParams<Resource[]>(rawResources, params);
 }
 
 export function getFunctionProperties(resources: Resource[]) {
   return resources.map((r) => r.properties);
+}
+
+/**
+ * Choses a node version to use based on the 'nodeVersion' field in resources.
+ * Currently, the emulator will use 1 node version for all functions, even though
+ * an extension can specify different node versions for each function when deployed.
+ * For now, we choose the newest version that a user lists in their function resources,
+ * and fall back to node 8 if none is listed.
+ */
+export function getNodeVersion(resources: Resource[]): string {
+  const functionNamesWithoutRuntime: string[] = [];
+  const versions = resources.map((r: Resource) => {
+    if (_.includes(r.type, "function")) {
+      if (r.properties?.runtime) {
+        return r.properties?.runtime;
+      } else {
+        functionNamesWithoutRuntime.push(r.name);
+      }
+    }
+    return "nodejs8";
+  });
+
+  if (functionNamesWithoutRuntime.length) {
+    EmulatorLogger.forEmulator(Emulators.FUNCTIONS).logLabeled(
+      "WARN",
+      "extensions",
+      `No 'runtime' property found for the following functions, defaulting to nodejs8: ${functionNamesWithoutRuntime.join(
+        ", "
+      )}`
+    );
+  }
+  const invalidRuntimes = _.filter(versions, (v) => {
+    return !_.includes(v, "nodejs");
+  });
+
+  if (invalidRuntimes.length) {
+    throw new FirebaseError(
+      `The following runtimes are not supported by the Emulator Suite: ${invalidRuntimes.join(
+        ", "
+      )}. \n Only Node runtimes are supported.`
+    );
+  }
+  if (_.includes(versions, "nodejs10")) {
+    return "10";
+  }
+  if (_.includes(versions, "nodejs6")) {
+    EmulatorLogger.forEmulator(Emulators.FUNCTIONS).logLabeled(
+      "WARN",
+      "extensions",
+      "Node 6 is deprecated. We recommend upgrading to a newer version."
+    );
+    return "6";
+  }
+  return "8";
 }

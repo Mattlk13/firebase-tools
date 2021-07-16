@@ -5,7 +5,7 @@ import * as marked from "marked";
 import { Param, ParamOption, ParamType } from "./extensionsApi";
 import { logPrefix, substituteParams } from "./extensionsHelper";
 import { convertExtensionOptionToLabeledList, onceWithJoin } from "./utils";
-import * as logger from "../logger";
+import { logger } from "../logger";
 import { promptOnce } from "../prompt";
 import * as utils from "../utils";
 
@@ -13,7 +13,7 @@ export function checkResponse(response: string, spec: Param): boolean {
   let valid = true;
   let responses: string[];
 
-  if (spec.required && !response) {
+  if (spec.required && (response == "" || response == undefined)) {
     utils.logWarning(`Param ${spec.param} is required, but no value was provided.`);
     return false;
   }
@@ -41,7 +41,7 @@ export function checkResponse(response: string, spec: Param): boolean {
   if (spec.type && (spec.type === ParamType.MULTISELECT || spec.type === ParamType.SELECT)) {
     _.forEach(responses, (r) => {
       // A choice is valid if it matches one of the option values.
-      let validChoice = _.some(spec.options, (option: ParamOption) => {
+      const validChoice = _.some(spec.options, (option: ParamOption) => {
         return r === option.value;
       });
       if (!validChoice) {
@@ -139,7 +139,7 @@ export async function ask(
   }
 
   utils.logLabeledBullet(logPrefix, "answer the questions below to configure your extension:");
-  const substituted = substituteParams(paramSpecs, firebaseProjectParams);
+  const substituted = substituteParams<Param[]>(paramSpecs, firebaseProjectParams);
   const result: any = {};
   const promises = _.map(substituted, (paramSpec: Param) => {
     return async () => {

@@ -1,7 +1,4 @@
 import * as _ from "lodash";
-import * as logger from "../logger";
-import * as parseTriggers from "../parseTriggers";
-import * as utils from "../utils";
 import { CloudFunction } from "firebase-functions";
 import * as os from "os";
 import * as path from "path";
@@ -14,16 +11,21 @@ export enum EmulatedTriggerType {
   HTTPS = "HTTPS",
 }
 
-export interface EmulatedTriggerDefinition {
+export interface ParsedTriggerDefinition {
   entryPoint: string;
   name: string;
   timeout?: string | number; // Can be "3s" for some reason lol
   regions?: string[];
-  availableMemoryMb?: "128MB" | "256MB" | "512MB" | "1GB" | "2GB";
+  availableMemoryMb?: "128MB" | "256MB" | "512MB" | "1GB" | "2GB" | "4GB";
   httpsTrigger?: any;
   eventTrigger?: EventTrigger;
   schedule?: EventSchedule;
   labels?: { [key: string]: any };
+}
+
+export interface EmulatedTriggerDefinition extends ParsedTriggerDefinition {
+  id: string; // An unique-id per-function, generated from the name and the region.
+  region: string;
 }
 
 export interface EventSchedule {
@@ -50,6 +52,7 @@ export interface FunctionsRuntimeBundle {
   projectId: string;
   proto?: any;
   triggerId?: string;
+  targetName?: string;
   triggerType?: EmulatedTriggerType;
   emulators: {
     firestore?: {
@@ -64,19 +67,27 @@ export interface FunctionsRuntimeBundle {
       host: string;
       port: number;
     };
+    auth?: {
+      host: string;
+      port: number;
+    };
+    storage?: {
+      host: string;
+      port: number;
+    };
+  };
+  adminSdkConfig: {
+    databaseURL?: string;
+    storageBucket?: string;
   };
   socketPath?: string;
   disabled_features?: FunctionsRuntimeFeatures;
+  nodeMajorVersion?: number;
   cwd: string;
 }
 
 export interface FunctionsRuntimeFeatures {
-  functions_config_helper?: boolean;
-  network_filtering?: boolean;
   timeout?: boolean;
-  memory_limiting?: boolean;
-  admin_stubs?: boolean;
-  pubsub_emulator?: boolean;
 }
 
 const memoryLookup = {
@@ -85,7 +96,13 @@ const memoryLookup = {
   "512MB": 512,
   "1GB": 1024,
   "2GB": 2048,
+  "4GB": 4096,
 };
+
+export class HttpConstants {
+  static readonly CALLABLE_AUTH_HEADER: string = "x-callable-context-auth";
+  static readonly ORIGINAL_AUTH_HEADER: string = "x-original-auth";
+}
 
 export class EmulatedTrigger {
   /*
@@ -117,37 +134,51 @@ export class EmulatedTrigger {
   }
 }
 
-export async function getTriggersFromDirectory(
-  projectId: string,
-  functionsDir: string,
-  firebaseConfig: any
-): Promise<EmulatedTriggerMap> {
-  let triggerDefinitions;
+/**
+ * Creates a unique trigger definition for each region a function is defined in.
+ * @param definitions A list of all CloudFunctions in the deployment.
+ * @return A list of all CloudFunctions in the deployment, with copies for each region.
+ */
+export function emulatedFunctionsByRegion(
+  definitions: ParsedTriggerDefinition[]
+): EmulatedTriggerDefinition[] {
+  const regionDefinitions: EmulatedTriggerDefinition[] = [];
+  for (const def of definitions) {
+    if (!def.regions) {
+      def.regions = ["us-central1"];
+    }
+    // Create a separate CloudFunction for
+    // each region we deploy a function to
+    for (const region of def.regions) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      const defDeepCopy: EmulatedTriggerDefinition = JSON.parse(JSON.stringify(def));
+      defDeepCopy.regions = [region];
+      defDeepCopy.region = region;
+      defDeepCopy.id = `${region}-${defDeepCopy.name}`;
 
-  try {
-    triggerDefinitions = await parseTriggers(
-      projectId,
-      functionsDir,
-      {},
-      JSON.stringify(firebaseConfig)
-    );
-  } catch (e) {
-    utils.logWarning(`Failed to load functions source code.`);
-    logger.info(e.message);
-    return {};
+      regionDefinitions.push(defDeepCopy);
+    }
   }
-
-  return getEmulatedTriggersFromDefinitions(triggerDefinitions, functionsDir);
+  return regionDefinitions;
 }
 
+/**
+ * Converts an array of EmulatedTriggerDefinitions to a map of EmulatedTriggers, which contain information on execution,
+ * @param {EmulatedTriggerDefinition[]} definitions An array of regionalized, parsed trigger definitions
+ * @param {Object} module Actual module which contains multiple functions / definitions
+ * @return a map of trigger ids to EmulatedTriggers
+ */
 export function getEmulatedTriggersFromDefinitions(
   definitions: EmulatedTriggerDefinition[],
-  module: any
+  module: any // eslint-disable-line @typescript-eslint/explicit-module-boundary-types, @typescript-eslint/no-explicit-any
 ): EmulatedTriggerMap {
-  return definitions.reduce((obj: { [triggerName: string]: any }, definition: any) => {
-    obj[definition.name] = new EmulatedTrigger(definition, module);
-    return obj;
-  }, {});
+  return definitions.reduce(
+    (obj: { [triggerName: string]: EmulatedTrigger }, definition: EmulatedTriggerDefinition) => {
+      obj[definition.id] = new EmulatedTrigger(definition, module);
+      return obj;
+    },
+    {}
+  );
 }
 
 export function getTemporarySocketPath(pid: number, cwd: string): string {
@@ -169,14 +200,6 @@ export function getTemporarySocketPath(pid: number, cwd: string): string {
   } else {
     return path.join(os.tmpdir(), `fire_emu_${pid.toString()}.sock`);
   }
-}
-
-export function getFunctionRegion(def: EmulatedTriggerDefinition): string {
-  if (def.regions && def.regions.length > 0) {
-    return def.regions[0];
-  }
-
-  return "us-central1";
 }
 
 export function getFunctionService(def: EmulatedTriggerDefinition): string {

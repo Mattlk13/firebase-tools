@@ -5,7 +5,7 @@ import * as dotenv from "dotenv";
 import * as fs from "fs-extra";
 
 import { FirebaseError } from "../error";
-import * as logger from "../logger";
+import { logger } from "../logger";
 import * as extensionsApi from "./extensionsApi";
 import {
   getFirebaseProjectParams,
@@ -105,10 +105,16 @@ export async function promptForNewParams(
     return param1.type === param2.type && param1.param === param2.param;
   };
   let paramsDiffDeletions = _.differenceWith(spec.params, _.get(newSpec, "params", []), comparer);
-  paramsDiffDeletions = substituteParams(paramsDiffDeletions, firebaseProjectParams);
+  paramsDiffDeletions = substituteParams<extensionsApi.Param[]>(
+    paramsDiffDeletions,
+    firebaseProjectParams
+  );
 
   let paramsDiffAdditions = _.differenceWith(newSpec.params, _.get(spec, "params", []), comparer);
-  paramsDiffAdditions = substituteParams(paramsDiffAdditions, firebaseProjectParams);
+  paramsDiffAdditions = substituteParams<extensionsApi.Param[]>(
+    paramsDiffAdditions,
+    firebaseProjectParams
+  );
 
   if (paramsDiffDeletions.length) {
     logger.info("The following params will no longer be used:");
@@ -118,11 +124,22 @@ export async function promptForNewParams(
     });
   }
   if (paramsDiffAdditions.length) {
-    logger.info("Please configure the following new params:");
+    logger.info("To update this instance, configure the following new parameters:");
     for (const param of paramsDiffAdditions) {
       const chosenValue = await askUserForParam.askForParam(param);
       currentParams[param.param] = chosenValue;
     }
   }
   return currentParams;
+}
+
+export function readParamsFile(envFilePath: string): any {
+  try {
+    const buf = fs.readFileSync(path.resolve(envFilePath), "utf8");
+    return dotenv.parse(buf.toString().trim(), { debug: true });
+  } catch (err) {
+    throw new FirebaseError(`Error reading --test-params file: ${err.message}\n`, {
+      original: err,
+    });
+  }
 }
